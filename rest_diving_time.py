@@ -20,6 +20,8 @@ It only uses the Python standard library.
 from __future__ import annotations
 
 import argparse
+import datetime
+import html
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -246,6 +248,61 @@ def available_gas_litres(dive: Dive, reserve_bar: float) -> tuple[float, float] 
     return usable_bar * dive.tank_volume_l, start_bar
 
 
+# --- report model ----------------------------------------------------------
+
+
+@dataclass
+class PrognosisRow:
+    depth_m: float
+    minutes: float
+    rate_l_per_min: float
+
+
+@dataclass
+class DiveReport:
+    dive: Dive
+    consumption: Consumption
+    usable_litres: float | None
+    start_bar: float | None
+    reserve_bar: float
+    rows: list[PrognosisRow]
+    note: str | None  # set when no prognosis could be produced
+
+
+def build_dive_report(
+    dive: Dive,
+    depths: list[float],
+    reserve_bar: float,
+) -> DiveReport:
+    cons = analyse_consumption(dive)
+
+    if cons.rmv_l_per_min is None:
+        return DiveReport(
+            dive, cons, None, None, reserve_bar, [],
+            "RMV n/a (needs tank volume + tank-pressure samples) "
+            "- no prognosis possible.",
+        )
+
+    gas = available_gas_litres(dive, reserve_bar)
+    if gas is None:
+        return DiveReport(
+            dive, cons, None, None, reserve_bar, [],
+            "No usable gas figure available for prognosis.",
+        )
+
+    usable_litres, start_bar = gas
+    rows: list[PrognosisRow] = []
+    for depth in depths:
+        rate = cons.rmv_l_per_min * ambient_pressure_bar(depth)
+        if rate <= 0:
+            continue
+        rows.append(PrognosisRow(depth, usable_litres / rate, rate))
+
+    return DiveReport(
+        dive, cons, usable_litres, start_bar, reserve_bar, rows, None
+    )
+
+
 # --- reporting -------------------------------------------------------------
 
 
@@ -258,12 +315,9 @@ def format_minutes(minutes: float) -> str:
     return f"{m}m {s:02d}s"
 
 
-def report_dive(
-    dive: Dive,
-    depths: list[float],
-    reserve_bar: float,
-) -> None:
-    cons = analyse_consumption(dive)
+def report_dive(report: DiveReport) -> None:
+    dive = report.dive
+    cons = report.consumption
 
     print(f"Dive {dive.number}")
     print(f"  samples              : {len(dive.waypoints)}")
@@ -278,38 +332,157 @@ def report_dive(
         print(f"  end pressure         : {dive.pressure_end_bar:.0f} bar")
     print(f"  gas used (sampled)   : {cons.gas_used_bar:.0f} bar")
 
-    if cons.rmv_l_per_min is None:
-        print(
-            "  RMV                  : n/a "
-            "(needs tank volume + tank-pressure samples)"
-        )
-        print("  -> cannot compute a rest-time prognosis for this dive.\n")
+    if report.note is not None:
+        print(f"  -> {report.note}\n")
         return
 
     print(f"  RMV (surface)        : {cons.rmv_l_per_min:.1f} L/min")
-
-    gas = available_gas_litres(dive, reserve_bar)
-    if gas is None:
-        print("  -> no usable gas figure available for prognosis.\n")
-        return
-
-    usable_litres, start_bar = gas
     print(
-        f"  usable gas           : {usable_litres:.0f} L "
-        f"(from {start_bar:.0f} bar, {reserve_bar:.0f} bar reserve)"
+        f"  usable gas           : {report.usable_litres:.0f} L "
+        f"(from {report.start_bar:.0f} bar, {report.reserve_bar:.0f} bar reserve)"
     )
-    print(f"  rest-time prognosis (constant depth, {reserve_bar:.0f} bar reserve):")
-    for depth in depths:
-        p_amb = ambient_pressure_bar(depth)
-        rate_at_depth = cons.rmv_l_per_min * p_amb   # surface L/min at that depth
-        if rate_at_depth <= 0:
-            continue
-        minutes = usable_litres / rate_at_depth
+    print(
+        f"  rest-time prognosis (constant depth, "
+        f"{report.reserve_bar:.0f} bar reserve):"
+    )
+    for row in report.rows:
         print(
-            f"      {depth:5.0f} m : {format_minutes(minutes):>12} "
-            f"({rate_at_depth:.1f} L/min)"
+            f"      {row.depth_m:5.0f} m : {format_minutes(row.minutes):>12} "
+            f"({row.rate_l_per_min:.1f} L/min)"
         )
     print()
+
+
+# --- HTML rendering --------------------------------------------------------
+
+
+def _esc(value: object) -> str:
+    return html.escape(str(value))
+
+
+def _dive_card_html(report: DiveReport) -> str:
+    dive = report.dive
+    cons = report.consumption
+
+    facts = [
+        ("Samples", f"{len(dive.waypoints)}"),
+        ("Duration", format_minutes(cons.duration_min)),
+        ("Max depth", f"{cons.max_depth_m:.1f} m"),
+        ("Average depth", f"{cons.avg_depth_m:.1f} m"),
+    ]
+    if dive.tank_volume_l is not None:
+        facts.append(("Tank volume", f"{dive.tank_volume_l:.1f} L"))
+    if dive.pressure_begin_bar is not None:
+        facts.append(("Start pressure", f"{dive.pressure_begin_bar:.0f} bar"))
+    if dive.pressure_end_bar is not None:
+        facts.append(("End pressure", f"{dive.pressure_end_bar:.0f} bar"))
+    facts.append(("Gas used (sampled)", f"{cons.gas_used_bar:.0f} bar"))
+    if cons.rmv_l_per_min is not None:
+        facts.append(("RMV (surface)", f"{cons.rmv_l_per_min:.1f} L/min"))
+
+    facts_html = "\n".join(
+        f'      <div class="fact"><span class="label">{_esc(k)}</span>'
+        f'<span class="value">{_esc(v)}</span></div>'
+        for k, v in facts
+    )
+
+    if report.note is not None:
+        body = f'    <p class="note">{_esc(report.note)}</p>'
+    else:
+        rows_html = "\n".join(
+            f"        <tr><td>{r.depth_m:.0f} m</td>"
+            f"<td class=\"time\">{_esc(format_minutes(r.minutes))}</td>"
+            f"<td class=\"rate\">{r.rate_l_per_min:.1f} L/min</td></tr>"
+            for r in report.rows
+        )
+        body = f"""    <p class="gasline">Usable gas
+      <strong>{report.usable_litres:.0f} L</strong>
+      (from {report.start_bar:.0f} bar, {report.reserve_bar:.0f} bar reserve)</p>
+    <table class="prognosis">
+      <thead><tr><th>Depth</th><th>Estimated time</th>
+        <th>Consumption</th></tr></thead>
+      <tbody>
+{rows_html}
+      </tbody>
+    </table>"""
+
+    return f"""  <section class="card">
+    <h2>Dive {_esc(dive.number)}</h2>
+    <div class="facts">
+{facts_html}
+    </div>
+{body}
+  </section>"""
+
+
+def render_html(reports: list[DiveReport], source: str) -> str:
+    generated = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    cards = "\n".join(_dive_card_html(r) for r in reports)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rest Diving Time – {_esc(source)}</title>
+<style>
+  :root {{
+    --bg: #0e1726; --card: #16223a; --ink: #e6edf6; --muted: #8aa0bd;
+    --accent: #38bdf8; --line: #243650;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }}
+  .wrap {{ max-width: 880px; margin: 0 auto; }}
+  header h1 {{ margin: 0 0 .25rem; font-size: 1.6rem; }}
+  header p {{ margin: 0 0 2rem; color: var(--muted); font-size: .9rem; }}
+  .card {{
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 1.25rem 1.5rem; margin-bottom: 1.5rem;
+  }}
+  .card h2 {{ margin: 0 0 1rem; font-size: 1.25rem; color: var(--accent); }}
+  .facts {{
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: .5rem .75rem; margin-bottom: 1.25rem;
+  }}
+  .fact {{ display: flex; flex-direction: column; }}
+  .fact .label {{ color: var(--muted); font-size: .75rem;
+    text-transform: uppercase; letter-spacing: .04em; }}
+  .fact .value {{ font-weight: 600; }}
+  .gasline {{ color: var(--muted); margin: 0 0 .75rem; }}
+  .gasline strong {{ color: var(--ink); }}
+  table.prognosis {{ width: 100%; border-collapse: collapse; }}
+  table.prognosis th, table.prognosis td {{
+    text-align: left; padding: .6rem .5rem; border-bottom: 1px solid var(--line);
+  }}
+  table.prognosis th {{ color: var(--muted); font-size: .75rem;
+    text-transform: uppercase; letter-spacing: .04em; }}
+  table.prognosis td.time {{ font-weight: 700; color: var(--accent);
+    font-size: 1.05rem; }}
+  table.prognosis td.rate {{ color: var(--muted); }}
+  table.prognosis tr:last-child td {{ border-bottom: none; }}
+  .note {{ color: #fbbf24; margin: 0; }}
+  footer {{ color: var(--muted); font-size: .8rem; margin-top: 2rem;
+    border-top: 1px solid var(--line); padding-top: 1rem; }}
+</style>
+</head>
+<body>
+  <div class="wrap">
+  <header>
+    <h1>Rest Diving Time Prognosis</h1>
+    <p>Source: {_esc(source)} &middot; {len(reports)} dive(s)
+       &middot; generated {generated}</p>
+  </header>
+{cards}
+  <footer>
+    Estimates assume a constant depth and steady breathing rate. They do
+    <strong>not</strong> model no-decompression limits &ndash; always
+    cross-check with your dive computer or tables.
+  </footer>
+  </div>
+</body>
+</html>"""
 
 
 def parse_depths(spec: str) -> list[float]:
@@ -340,6 +513,11 @@ def main(argv: list[str] | None = None) -> int:
         default=50.0,
         help="reserve pressure to keep in the tank, in bar (default: 50)",
     )
+    parser.add_argument(
+        "--html",
+        metavar="PATH",
+        help="write a styled HTML report to PATH instead of plain text",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -356,10 +534,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     depths = parse_depths(args.depths)
+    reports = [build_dive_report(dive, depths, args.reserve) for dive in dives]
 
-    print(f"Parsed {len(dives)} dive(s) from {args.uddf}\n")
-    for dive in dives:
-        report_dive(dive, depths, args.reserve)
+    if args.html:
+        try:
+            with open(args.html, "w", encoding="utf-8") as fh:
+                fh.write(render_html(reports, args.uddf))
+        except OSError as exc:
+            print(f"error: could not write HTML file: {exc}", file=sys.stderr)
+            return 1
+        print(f"Wrote HTML report for {len(reports)} dive(s) to {args.html}")
+        return 0
+
+    print(f"Parsed {len(reports)} dive(s) from {args.uddf}\n")
+    for report in reports:
+        report_dive(report)
 
     return 0
 

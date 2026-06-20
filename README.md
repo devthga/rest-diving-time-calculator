@@ -31,11 +31,21 @@ Options:
 |--------------|-----------|--------------------------------------------------------|
 | `--depths`   | `5,10,15` | Comma-separated target depths in metres.               |
 | `--reserve`  | `50`      | Reserve pressure (bar) to keep in the tank.            |
+| `--html`     | –         | Write a styled, self-contained HTML report to a path.  |
 
 Example with custom depths and a 40 bar reserve:
 
 ```bash
 python3 rest_diving_time.py export.uddf --depths 3,6,12,20 --reserve 40
+```
+
+### HTML report
+
+For easy viewing in a browser, write the prognosis to a standalone HTML page
+(no external assets, just open it):
+
+```bash
+python3 rest_diving_time.py examples/sample_macdive.uddf --html report.html
 ```
 
 ## Example output
