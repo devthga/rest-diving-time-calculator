@@ -56,6 +56,7 @@ class Dive:
     pressure_begin_bar: float | None
     pressure_end_bar: float | None
     when: str | None = None          # dive date/time (UDDF <datetime>)
+    divenumber: int | None = None    # logged dive number (UDDF <divenumber>)
 
 
 # --- UDDF parsing ----------------------------------------------------------
@@ -114,6 +115,15 @@ def parse_uddf(path: str) -> list[Dive]:
         if dt_elem is not None and dt_elem.text:
             when = dt_elem.text.strip()
 
+        # logged dive number (<divenumber>), used for display and sorting
+        divenumber = None
+        num_elem = _find(dive_elem, "divenumber")
+        if num_elem is not None and num_elem.text:
+            try:
+                divenumber = int(num_elem.text.strip())
+            except ValueError:
+                divenumber = None
+
         # waypoints / samples
         waypoints: list[Waypoint] = []
         for wp in _findall_local(dive_elem, "waypoint"):
@@ -150,6 +160,7 @@ def parse_uddf(path: str) -> list[Dive]:
                 pressure_begin_bar=pressure_begin_bar,
                 pressure_end_bar=pressure_end_bar,
                 when=when,
+                divenumber=divenumber,
             )
         )
 
@@ -171,20 +182,22 @@ class Consumption:
 def analyse_consumption(dive: Dive) -> Consumption:
     """Derive the diver's air-consumption rate from the recorded profile.
 
-    RMV (Respiratory Minute Volume) is the depth-independent breathing rate
-    normalised to the surface::
+    RMV/SAC (the surface-normalised breathing rate) is computed the way dive
+    logs such as MacDive report it: total gas consumed over the whole dive,
+    divided by the total dive time and the average ambient pressure::
 
-        RMV = sum(dP_tank * tank_volume) / sum(dt * P_ambient)
+        RMV = (dP_total * tank_volume) / (dive_time * P_ambient(avg_depth))
 
-    where dP_tank is the pressure drop over an interval (bar), tank_volume is
-    in litres, dt is the interval duration (minutes) and P_ambient is the mean
-    absolute pressure (bar) over the interval.  Intervals where the pressure
-    rises (sensor noise, gas switches) are ignored.
+    dP_total is the begin-to-end tank-pressure drop (from <tankpressurebegin>
+    / <tankpressureend>, falling back to the sampled drop), tank_volume is in
+    litres, dive_time is in minutes and P_ambient(avg_depth) = 1 + avg/10.
+
+    Using the *total* time (not only the intervals where pressure dropped)
+    matters: air-integration logging gaps would otherwise shrink the
+    denominator and overstate the SAC compared with MacDive.
     """
     wps = dive.waypoints
     total_gas_bar = 0.0
-    weighted_volume_litres = 0.0     # numerator: surface gas consumed (L)
-    weighted_ata_minutes = 0.0       # denominator: dt(min) * P_ambient(bar)
     depth_time_integral = 0.0
     total_time_s = 0.0
     max_depth = 0.0
@@ -201,26 +214,29 @@ def analyse_consumption(dive: Dive) -> Consumption:
         if prev.tank_pressure_bar is None or cur.tank_pressure_bar is None:
             continue
         dp = prev.tank_pressure_bar - cur.tank_pressure_bar
-        if dp <= 0:
-            continue
-        total_gas_bar += dp
-        dt_min = dt_s / 60.0
-        p_amb = ambient_pressure_bar(avg_depth)
-        if dive.tank_volume_l is not None:
-            weighted_volume_litres += dp * dive.tank_volume_l
-        weighted_ata_minutes += dt_min * p_amb
+        if dp > 0:
+            total_gas_bar += dp
 
     max_depth = max(max_depth, (wps[-1].depth_m if wps else 0.0))
     avg_depth = depth_time_integral / total_time_s if total_time_s else 0.0
     duration_min = total_time_s / 60.0
 
+    # Total gas drop: prefer the explicit begin/end tank pressures (what
+    # MacDive uses), fall back to the sum of sampled pressure drops.
+    gas_drop_bar = total_gas_bar
+    if dive.pressure_begin_bar is not None and dive.pressure_end_bar is not None:
+        explicit_drop = dive.pressure_begin_bar - dive.pressure_end_bar
+        if explicit_drop > 0:
+            gas_drop_bar = explicit_drop
+
     rmv = None
     if (
         dive.tank_volume_l is not None
-        and weighted_ata_minutes > 0
-        and weighted_volume_litres > 0
+        and duration_min > 0
+        and gas_drop_bar > 0
     ):
-        rmv = weighted_volume_litres / weighted_ata_minutes
+        avg_p_amb = ambient_pressure_bar(avg_depth)
+        rmv = (gas_drop_bar * dive.tank_volume_l) / (duration_min * avg_p_amb)
 
     return Consumption(
         rmv_l_per_min=rmv,
@@ -231,29 +247,74 @@ def analyse_consumption(dive: Dive) -> Consumption:
     )
 
 
-def available_gas_litres(dive: Dive, reserve_bar: float) -> tuple[float, float] | None:
-    """Usable surface gas (litres) and the start pressure (bar) used for it.
+def remaining_gas_litres(dive: Dive, reserve_bar: float) -> tuple[float, float] | None:
+    """Usable *remaining* surface gas (litres) and the remaining pressure (bar).
 
-    Prefers the explicit tankpressurebegin, otherwise the highest pressure seen
-    in the profile.  Returns None if neither pressure nor tank volume is known.
+    "Rest"/remaining time is computed from the gas the diver still had at the
+    end of the dive, drawn down to the reserve pressure::
+
+        usable = (remaining_pressure - reserve) * tank_volume
+
+    The remaining pressure is the explicit tankpressureend, otherwise the
+    pressure of the last logged sample.  Returns None if neither the remaining
+    pressure nor the tank volume is known.
     """
     if dive.tank_volume_l is None:
         return None
 
-    start_bar = dive.pressure_begin_bar
-    if start_bar is None:
+    remaining_bar = dive.pressure_end_bar
+    if remaining_bar is None:
         sampled = [
             wp.tank_pressure_bar
             for wp in dive.waypoints
             if wp.tank_pressure_bar is not None
         ]
         if sampled:
-            start_bar = max(sampled)
-    if start_bar is None:
+            remaining_bar = sampled[-1]
+    if remaining_bar is None:
         return None
 
-    usable_bar = max(0.0, start_bar - reserve_bar)
-    return usable_bar * dive.tank_volume_l, start_bar
+    usable_bar = max(0.0, remaining_bar - reserve_bar)
+    return usable_bar * dive.tank_volume_l, remaining_bar
+
+
+def consumption_at_depth(
+    dive: Dive, target_depth_m: float, window_m: float
+) -> float | None:
+    """Observed surface gas-consumption rate (L/min) near a given depth.
+
+    Looks at every interval of the recorded profile whose mean depth lies
+    within +/- window_m of the target depth and aggregates the gas actually
+    consumed there::
+
+        rate = sum(dP_tank * tank_volume) / sum(dt)
+
+    Returns None if the dive never spent measurable time near that depth (or
+    has no tank data), so the caller can fall back to a modelled rate.
+    """
+    if dive.tank_volume_l is None:
+        return None
+
+    litres = 0.0
+    minutes = 0.0
+    for prev, cur in zip(dive.waypoints, dive.waypoints[1:]):
+        dt_s = cur.time_s - prev.time_s
+        if dt_s <= 0:
+            continue
+        avg_depth = (prev.depth_m + cur.depth_m) / 2.0
+        if abs(avg_depth - target_depth_m) > window_m:
+            continue
+        if prev.tank_pressure_bar is None or cur.tank_pressure_bar is None:
+            continue
+        dp = prev.tank_pressure_bar - cur.tank_pressure_bar
+        if dp <= 0:
+            continue
+        litres += dp * dive.tank_volume_l
+        minutes += dt_s / 60.0
+
+    if minutes <= 0 or litres <= 0:
+        return None
+    return litres / minutes
 
 
 # --- report model ----------------------------------------------------------
@@ -264,6 +325,7 @@ class PrognosisRow:
     depth_m: float
     minutes: float
     rate_l_per_min: float
+    observed: bool          # True: rate measured at this depth; False: modelled
 
 
 @dataclass
@@ -271,7 +333,7 @@ class DiveReport:
     dive: Dive
     consumption: Consumption
     usable_litres: float | None
-    start_bar: float | None
+    remaining_bar: float | None
     reserve_bar: float
     rows: list[PrognosisRow]
     note: str | None  # set when no prognosis could be produced
@@ -281,33 +343,39 @@ def build_dive_report(
     dive: Dive,
     depths: list[float],
     reserve_bar: float,
+    window_m: float,
 ) -> DiveReport:
     cons = analyse_consumption(dive)
 
-    if cons.rmv_l_per_min is None:
-        return DiveReport(
-            dive, cons, None, None, reserve_bar, [],
-            "RMV n/a (needs tank volume + tank-pressure samples) "
-            "- no prognosis possible.",
-        )
-
-    gas = available_gas_litres(dive, reserve_bar)
+    gas = remaining_gas_litres(dive, reserve_bar)
     if gas is None:
         return DiveReport(
             dive, cons, None, None, reserve_bar, [],
-            "No usable gas figure available for prognosis.",
+            "No remaining-gas figure available "
+            "(needs tank volume + end pressure) - no prognosis possible.",
         )
 
-    usable_litres, start_bar = gas
+    usable_litres, remaining_bar = gas
     rows: list[PrognosisRow] = []
     for depth in depths:
-        rate = cons.rmv_l_per_min * ambient_pressure_bar(depth)
-        if rate <= 0:
+        # Prefer the consumption the diver actually had near this depth;
+        # fall back to the surface RMV scaled to the depth's ambient pressure.
+        rate = consumption_at_depth(dive, depth, window_m)
+        observed = rate is not None
+        if rate is None and cons.rmv_l_per_min is not None:
+            rate = cons.rmv_l_per_min * ambient_pressure_bar(depth)
+        if rate is None or rate <= 0:
             continue
-        rows.append(PrognosisRow(depth, usable_litres / rate, rate))
+        rows.append(PrognosisRow(depth, usable_litres / rate, rate, observed))
+
+    if not rows:
+        return DiveReport(
+            dive, cons, usable_litres, remaining_bar, reserve_bar, [],
+            "Not enough consumption data to estimate time at the given depths.",
+        )
 
     return DiveReport(
-        dive, cons, usable_litres, start_bar, reserve_bar, rows, None
+        dive, cons, usable_litres, remaining_bar, reserve_bar, rows, None
     )
 
 
@@ -323,11 +391,18 @@ def format_minutes(minutes: float) -> str:
     return f"{m}m {s:02d}s"
 
 
+def dive_label(dive: Dive) -> str:
+    """Human-friendly dive identifier: the logged number when available."""
+    if dive.divenumber is not None:
+        return f"Dive {dive.divenumber}"
+    return f"Dive {dive.number}"
+
+
 def report_dive(report: DiveReport) -> None:
     dive = report.dive
     cons = report.consumption
 
-    print(f"Dive {dive.number}")
+    print(dive_label(dive))
     if dive.when:
         print(f"  date / time          : {dive.when}")
     print(f"  samples              : {len(dive.waypoints)}")
@@ -341,24 +416,27 @@ def report_dive(report: DiveReport) -> None:
     if dive.pressure_end_bar is not None:
         print(f"  end pressure         : {dive.pressure_end_bar:.0f} bar")
     print(f"  gas used (sampled)   : {cons.gas_used_bar:.0f} bar")
+    if cons.rmv_l_per_min is not None:
+        print(f"  RMV (surface)        : {cons.rmv_l_per_min:.1f} L/min")
 
     if report.note is not None:
         print(f"  -> {report.note}\n")
         return
 
-    print(f"  RMV (surface)        : {cons.rmv_l_per_min:.1f} L/min")
     print(
-        f"  usable gas           : {report.usable_litres:.0f} L "
-        f"(from {report.start_bar:.0f} bar, {report.reserve_bar:.0f} bar reserve)"
+        f"  remaining gas        : {report.usable_litres:.0f} L "
+        f"(from {report.remaining_bar:.0f} bar, "
+        f"{report.reserve_bar:.0f} bar reserve)"
     )
     print(
-        f"  rest-time prognosis (constant depth, "
-        f"{report.reserve_bar:.0f} bar reserve):"
+        "  remaining-time prognosis "
+        f"(constant depth, down to {report.reserve_bar:.0f} bar):"
     )
     for row in report.rows:
+        source = "measured" if row.observed else "modelled"
         print(
             f"      {row.depth_m:5.0f} m : {format_minutes(row.minutes):>12} "
-            f"({row.rate_l_per_min:.1f} L/min)"
+            f"({row.rate_l_per_min:.1f} L/min, {source})"
         )
     print()
 
@@ -402,15 +480,17 @@ def _dive_card_html(report: DiveReport) -> str:
         rows_html = "\n".join(
             f"        <tr><td>{r.depth_m:.0f} m</td>"
             f"<td class=\"time\">{_esc(format_minutes(r.minutes))}</td>"
-            f"<td class=\"rate\">{r.rate_l_per_min:.1f} L/min</td></tr>"
+            f"<td class=\"rate\">{r.rate_l_per_min:.1f} L/min</td>"
+            f"<td class=\"src\">{'measured' if r.observed else 'modelled'}</td>"
+            f"</tr>"
             for r in report.rows
         )
-        body = f"""    <p class="gasline">Usable gas
+        body = f"""    <p class="gasline">Remaining gas
       <strong>{report.usable_litres:.0f} L</strong>
-      (from {report.start_bar:.0f} bar, {report.reserve_bar:.0f} bar reserve)</p>
+      (from {report.remaining_bar:.0f} bar, {report.reserve_bar:.0f} bar reserve)</p>
     <table class="prognosis">
-      <thead><tr><th>Depth</th><th>Estimated time</th>
-        <th>Consumption</th></tr></thead>
+      <thead><tr><th>Depth</th><th>Remaining time</th>
+        <th>Consumption</th><th>Source</th></tr></thead>
       <tbody>
 {rows_html}
       </tbody>
@@ -420,7 +500,7 @@ def _dive_card_html(report: DiveReport) -> str:
         f'\n    <p class="when">{_esc(dive.when)}</p>' if dive.when else ""
     )
     return f"""  <section class="card">
-    <h2>Dive {_esc(dive.number)}</h2>{subtitle}
+    <h2>{_esc(dive_label(dive))}</h2>{subtitle}
     <div class="facts">
 {facts_html}
     </div>
@@ -475,6 +555,8 @@ def render_html(reports: list[DiveReport], source: str) -> str:
   table.prognosis td.time {{ font-weight: 700; color: var(--accent);
     font-size: 1.05rem; }}
   table.prognosis td.rate {{ color: var(--muted); }}
+  table.prognosis td.src {{ color: var(--muted); font-size: .8rem;
+    text-transform: uppercase; letter-spacing: .04em; }}
   table.prognosis tr:last-child td {{ border-bottom: none; }}
   .note {{ color: #fbbf24; margin: 0; }}
   footer {{ color: var(--muted); font-size: .8rem; margin-top: 2rem;
@@ -528,6 +610,25 @@ def main(argv: list[str] | None = None) -> int:
         help="reserve pressure to keep in the tank, in bar (default: 50)",
     )
     parser.add_argument(
+        "--depth-window",
+        type=float,
+        default=2.5,
+        metavar="M",
+        help=(
+            "half-width (metres) of the depth band used to measure the "
+            "consumption near each target depth (default: 2.5)"
+        ),
+    )
+    parser.add_argument(
+        "--sort",
+        choices=("file", "number"),
+        default="file",
+        help=(
+            "order of dives in the output: 'file' (as exported, default) or "
+            "'number' (by logged dive number)"
+        ),
+    )
+    parser.add_argument(
         "--html",
         metavar="PATH",
         help="write a styled HTML report to PATH instead of plain text",
@@ -547,8 +648,18 @@ def main(argv: list[str] | None = None) -> int:
         print("No dives found in the UDDF file.", file=sys.stderr)
         return 1
 
+    if args.sort == "number":
+        # Dives without a logged number sort last, keeping export order.
+        dives = sorted(
+            dives,
+            key=lambda d: (d.divenumber is None, d.divenumber or 0),
+        )
+
     depths = parse_depths(args.depths)
-    reports = [build_dive_report(dive, depths, args.reserve) for dive in dives]
+    reports = [
+        build_dive_report(dive, depths, args.reserve, args.depth_window)
+        for dive in dives
+    ]
 
     if args.html:
         try:

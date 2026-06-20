@@ -14,30 +14,53 @@
   </gasdefinitions>
   <profiledata>
     <repetitiongroup id="rg1">
-      <dive id="dive1">
+      <!-- Dive 2 is listed first on purpose, to demonstrate sorting. -->
+      <dive id="dive_b">
         <informationbeforedive>
-          <divenumber>1</divenumber>
-          <datetime>2026-06-20T21:56:55</datetime>
+          <divenumber>2</divenumber>
+          <datetime>2026-06-20T14:30:00</datetime>
         </informationbeforedive>
         <samples>
           <waypoint><divetime>0</divetime><depth>0.0</depth><tankpressure>20000000</tankpressure></waypoint>
-          <waypoint><divetime>60</divetime><depth>8.0</depth><tankpressure>19400000</tankpressure></waypoint>
-          <waypoint><divetime>120</divetime><depth>15.0</depth><tankpressure>18650000</tankpressure></waypoint>
-          <waypoint><divetime>300</divetime><depth>18.0</depth><tankpressure>16100000</tankpressure></waypoint>
-          <waypoint><divetime>600</divetime><depth>20.0</depth><tankpressure>11650000</tankpressure></waypoint>
-          <waypoint><divetime>900</divetime><depth>18.0</depth><tankpressure>7600000</tankpressure></waypoint>
-          <waypoint><divetime>1200</divetime><depth>12.0</depth><tankpressure>4750000</tankpressure></waypoint>
-          <waypoint><divetime>1380</divetime><depth>5.0</depth><tankpressure>3700000</tankpressure></waypoint>
-          <waypoint><divetime>1500</divetime><depth>0.0</depth><tankpressure>3300000</tankpressure></waypoint>
+          <waypoint><divetime>120</divetime><depth>15.0</depth><tankpressure>19562500</tankpressure></waypoint>
+          <waypoint><divetime>600</divetime><depth>15.0</depth><tankpressure>17062500</tankpressure></waypoint>
+          <waypoint><divetime>660</divetime><depth>10.0</depth><tankpressure>16781250</tankpressure></waypoint>
+          <waypoint><divetime>1200</divetime><depth>10.0</depth><tankpressure>14531250</tankpressure></waypoint>
+          <waypoint><divetime>1260</divetime><depth>5.0</depth><tankpressure>14312500</tankpressure></waypoint>
+          <waypoint><divetime>1560</divetime><depth>5.0</depth><tankpressure>13375000</tankpressure></waypoint>
+          <waypoint><divetime>1620</divetime><depth>0.0</depth><tankpressure>13218750</tankpressure></waypoint>
         </samples>
         <informationafterdive>
-          <greatestdepth>20.0</greatestdepth>
-          <diveduration>1500</diveduration>
+          <greatestdepth>15.0</greatestdepth>
+          <diveduration>1620</diveduration>
         </informationafterdive>
         <tankdata>
           <tankvolume>0.012</tankvolume>
           <tankpressurebegin>20000000</tankpressurebegin>
-          <tankpressureend>3300000</tankpressureend>
+          <tankpressureend>13218750</tankpressureend>
+        </tankdata>
+      </dive>
+      <dive id="dive_a">
+        <informationbeforedive>
+          <divenumber>1</divenumber>
+          <datetime>2026-06-20T10:15:00</datetime>
+        </informationbeforedive>
+        <samples>
+          <waypoint><divetime>0</divetime><depth>0.0</depth><tankpressure>20000000</tankpressure></waypoint>
+          <waypoint><divetime>60</divetime><depth>10.0</depth><tankpressure>19500000</tankpressure></waypoint>
+          <waypoint><divetime>660</divetime><depth>10.0</depth><tankpressure>16500000</tankpressure></waypoint>
+          <waypoint><divetime>720</divetime><depth>5.0</depth><tankpressure>16200000</tankpressure></waypoint>
+          <waypoint><divetime>1020</divetime><depth>5.0</depth><tankpressure>15000000</tankpressure></waypoint>
+          <waypoint><divetime>1080</divetime><depth>0.0</depth><tankpressure>14800000</tankpressure></waypoint>
+        </samples>
+        <informationafterdive>
+          <greatestdepth>10.0</greatestdepth>
+          <diveduration>1080</diveduration>
+        </informationafterdive>
+        <tankdata>
+          <tankvolume>0.012</tankvolume>
+          <tankpressurebegin>20000000</tankpressurebegin>
+          <tankpressureend>14800000</tankpressureend>
         </tankdata>
       </dive>
     </repetitiongroup>
