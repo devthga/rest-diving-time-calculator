@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<uddf xmlns="http://www.streit.cc/uddf/3.2/" version="3.2.0">
+  <generator>
+    <name>MacDive</name>
+    <manufacturer><name>Mac Dive</name></manufacturer>
+    <version>3.0</version>
+  </generator>
+  <gasdefinitions>
+    <mix id="air">
+      <name>Air</name>
+      <o2>0.21</o2>
+      <n2>0.79</n2>
+    </mix>
+  </gasdefinitions>
+  <profiledata>
+    <repetitiongroup id="rg1">
+      <dive id="dive1">
+        <informationbeforedive>
+          <divenumber>1</divenumber>
+        </informationbeforedive>
+        <samples>
+          <waypoint><divetime>0</divetime><depth>0.0</depth><tankpressure>20000000</tankpressure></waypoint>
+          <waypoint><divetime>60</divetime><depth>8.0</depth><tankpressure>19400000</tankpressure></waypoint>
+          <waypoint><divetime>120</divetime><depth>15.0</depth><tankpressure>18650000</tankpressure></waypoint>
+          <waypoint><divetime>300</divetime><depth>18.0</depth><tankpressure>16100000</tankpressure></waypoint>
+          <waypoint><divetime>600</divetime><depth>20.0</depth><tankpressure>11650000</tankpressure></waypoint>
+          <waypoint><divetime>900</divetime><depth>18.0</depth><tankpressure>7600000</tankpressure></waypoint>
+          <waypoint><divetime>1200</divetime><depth>12.0</depth><tankpressure>4750000</tankpressure></waypoint>
+          <waypoint><divetime>1380</divetime><depth>5.0</depth><tankpressure>3700000</tankpressure></waypoint>
+          <waypoint><divetime>1500</divetime><depth>0.0</depth><tankpressure>3300000</tankpressure></waypoint>
+        </samples>
+        <informationafterdive>
+          <greatestdepth>20.0</greatestdepth>
+          <diveduration>1500</diveduration>
+        </informationafterdive>
+        <tankdata>
+          <tankvolume>0.012</tankvolume>
+          <tankpressurebegin>20000000</tankpressurebegin>
+          <tankpressureend>3300000</tankpressureend>
+        </tankdata>
+      </dive>
+    </repetitiongroup>
+  </profiledata>
+</uddf>
