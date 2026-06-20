@@ -55,6 +55,7 @@ class Dive:
     tank_volume_l: float | None      # tank water capacity, litres
     pressure_begin_bar: float | None
     pressure_end_bar: float | None
+    when: str | None = None          # dive date/time (UDDF <datetime>)
 
 
 # --- UDDF parsing ----------------------------------------------------------
@@ -107,6 +108,12 @@ def parse_uddf(path: str) -> list[Dive]:
     for index, dive_elem in enumerate(dive_elems, start=1):
         number = dive_elem.get("id") or str(index)
 
+        # dive date/time (lives under informationbeforedive in UDDF)
+        when = None
+        dt_elem = _find(dive_elem, "datetime")
+        if dt_elem is not None and dt_elem.text:
+            when = dt_elem.text.strip()
+
         # waypoints / samples
         waypoints: list[Waypoint] = []
         for wp in _findall_local(dive_elem, "waypoint"):
@@ -142,6 +149,7 @@ def parse_uddf(path: str) -> list[Dive]:
                 tank_volume_l=tank_volume_l,
                 pressure_begin_bar=pressure_begin_bar,
                 pressure_end_bar=pressure_end_bar,
+                when=when,
             )
         )
 
@@ -320,6 +328,8 @@ def report_dive(report: DiveReport) -> None:
     cons = report.consumption
 
     print(f"Dive {dive.number}")
+    if dive.when:
+        print(f"  date / time          : {dive.when}")
     print(f"  samples              : {len(dive.waypoints)}")
     print(f"  duration             : {format_minutes(cons.duration_min)}")
     print(f"  max depth            : {cons.max_depth_m:.1f} m")
@@ -406,8 +416,11 @@ def _dive_card_html(report: DiveReport) -> str:
       </tbody>
     </table>"""
 
+    subtitle = (
+        f'\n    <p class="when">{_esc(dive.when)}</p>' if dive.when else ""
+    )
     return f"""  <section class="card">
-    <h2>Dive {_esc(dive.number)}</h2>
+    <h2>Dive {_esc(dive.number)}</h2>{subtitle}
     <div class="facts">
 {facts_html}
     </div>
@@ -441,7 +454,8 @@ def render_html(reports: list[DiveReport], source: str) -> str:
     background: var(--card); border: 1px solid var(--line); border-radius: 14px;
     padding: 1.25rem 1.5rem; margin-bottom: 1.5rem;
   }}
-  .card h2 {{ margin: 0 0 1rem; font-size: 1.25rem; color: var(--accent); }}
+  .card h2 {{ margin: 0 0 .25rem; font-size: 1.25rem; color: var(--accent); }}
+  .card .when {{ margin: 0 0 1rem; color: var(--muted); font-size: .85rem; }}
   .facts {{
     display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: .5rem .75rem; margin-bottom: 1.25rem;
