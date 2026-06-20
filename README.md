@@ -15,6 +15,10 @@ Only the Python standard library is required (Python 3.10+).
 
 ## Usage
 
+Pass the UDDF export as an **argument to the script** — don't run the `.uddf`
+file directly (`python your_export.uddf` will fail with a `SyntaxError`, because
+the data file is XML, not Python):
+
 ```bash
 python3 rest_diving_time.py path/to/export.uddf
 ```

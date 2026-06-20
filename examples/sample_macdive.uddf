@@ -17,6 +17,7 @@
       <dive id="dive1">
         <informationbeforedive>
           <divenumber>1</divenumber>
+          <datetime>2026-06-20T21:56:55</datetime>
         </informationbeforedive>
         <samples>
           <waypoint><divetime>0</divetime><depth>0.0</depth><tankpressure>20000000</tankpressure></waypoint>
